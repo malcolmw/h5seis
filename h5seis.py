@@ -4,9 +4,34 @@ __version__ = '0.0a0'
 
 import datetime
 import h5py
+import itertools
 import numpy as np
 import obspy
 import os
+import re
+
+
+def _filter(regex, iterable):
+    '''
+    Filter an iterable based on regular expression matches.
+    '''
+    return (filter(lambda key: re.match(regex, key), iterable))
+
+def _cascade(keys, iterable):
+    '''
+    Cascade a set of regex filters for each level of /Waveforms/{tag}
+    '''
+    if len(keys) == 0:
+        return (iterable)
+    return ([_cascade(keys[1:], iterable[key]) for key in _filter(keys[0], iterable)])
+
+def _flatten(iterable, n=1):
+    '''
+    Flatten the complex-shaped return value of _cascade()
+    '''
+    for i in range(n):
+        iterable = itertools.chain.from_iterable(iterable)
+    return (iterable)
 
 
 def get_date_range(starttime, endtime):
@@ -51,7 +76,6 @@ class H5Seis(object):
 
 
     def add_waveforms(self, obj, tag=_DEFAULT_TAG):
-        print(obj)
         if isinstance(obj, str) and os.path.isfile(os.path.abspath(obj)):
             st = obspy.read(obj)
         elif isinstance(obj, obspy.Stream):
@@ -60,12 +84,10 @@ class H5Seis(object):
             st = obspy.Stream(obj)
         else:
             raise(TypeError)
-        self._add(st)
+        self._add(st, tag=tag)
 
 
     def _add(self, st, tag=_DEFAULT_TAG):
-#         if tag not in self._h5['/Waveforms'].keys():
-#             self._h5.create_group(f'/Waveforms/{tag}')
 # TODO: The Stream should be cleaned up here
         for tr in st:
             stats         = tr.stats
@@ -81,40 +103,89 @@ class H5Seis(object):
             key = f'/Waveforms/{tag}/{network}/{station}/{location}/{channel}'\
                   f'/{starttime.year}/{starttime.julday:03d}/{starttime}__{endtime}'
             if key not in self._h5:
-                self._h5.create_dataset(
+                ds = self._h5.create_dataset(
                     key, (npts,), 
                     dtype=tr.data.dtype,
                     **self._create_dataset_kwargs
                 )
-                self._h5[key].attrs['sampling_rate'] = sampling_rate
-            self._h5[key][:] = tr.data
+                ds.attrs['starttime']     = starttime.timestamp
+                ds.attrs['sampling_rate'] = sampling_rate
+                ds.attrs['network']       = network
+                ds.attrs['station']       = station
+                ds.attrs['location']      = location
+                ds.attrs['channel']       = channel
+            else:
+                ds = self._h5[key]
+            ds[:] = tr.data
 
+    
+    def get_waveforms(
+        self, starttime, endtime,
+        tag=_DEFAULT_TAG, network='.*', station='.*', location='.*', channel='.*'
+    ):
 
-    def get_waveforms(self, network, station, location, channel, starttime, endtime, tag=_DEFAULT_TAG):
-        key_base = f'/Waveforms/{tag}/{network}/{station}/{location}/{channel}'
         st = obspy.Stream()
-        for date in get_date_range(starttime, endtime):
-            day_key = f'{key_base}/{date.year}/{date.julday:03d}'
-            if day_key not in self._h5:
-                continue
-            for item in self._h5[day_key]:
-                ts, te = [obspy.UTCDateTime(s) for s in item.split('__')]
-                if ts < endtime and te > starttime:
+        keys = (network, station, location, channel)
+        groups = _cascade(keys, self._h5[f'/Waveforms/{tag}'])
+        for group in _flatten(groups, n=3):
+            for date in get_date_range(starttime, endtime):
+                day_key = f'{group.name}/{date.year}/{date.julday:03d}'
+                if day_key not in self._h5:
+                    continue
+                for item in self._h5[day_key]:
                     key = f'{day_key}/{item}'
-                    sampling_rate = self._h5[key].attrs['sampling_rate']
-                    idx_start = 0 if ts > starttime else get_sample_idx(starttime, ts, sampling_rate, right=True)
-                    idx_end = None if te < endtime else get_sample_idx(endtime, ts, sampling_rate)
-                    if idx_start == idx_end:
-                        continue
-                    data = self._h5[key][idx_start: idx_end]
-                    tr = obspy.Trace(data=data)
-                    tr.stats.starttime = ts + idx_start / sampling_rate
-                    tr.stats.sampling_rate = sampling_rate
-                    tr.stats.network       = network
-                    tr.stats.station       = station
-                    tr.stats.location      = '' if location == '__' else location
-                    tr.stats.channel       = channel
-                    st.append(tr)
+                    tr = self._get_trace(key, starttime=starttime, endtime=endtime)
+                    if tr is not None:
+                        st.append(tr)
+        return (st)
+    
+    def _get_trace(self, key, starttime=None, endtime=None):
+        '''
+        Extract a trace from dataset at {key} between {starttime} and {endtime}
+        '''
+        ts, te = [obspy.UTCDateTime(s) for s in key.split('/')[-1].split('__')]
+        if starttime is not None and ts >= endtime:
+            return (None)
+        if endtime is not None and te <= starttime:
+            return (None)
+        ds = self._h5[key]
+        sampling_rate = ds.attrs['sampling_rate']
+        if starttime is None or ts > starttime:
+            idx_start = 0
+        else:
+            idx_start = get_sample_idx(starttime, ts, sampling_rate, right=True)
+        if endtime is None or te < endtime:
+            idx_end = None
+        else:
+            idx_end = get_sample_idx(endtime, ts, sampling_rate)
+        if idx_start == idx_end:
+            return (None)
+        data = ds[idx_start: idx_end]
+        tr = obspy.Trace(data=data)
+        tr.stats.starttime     = obspy.UTCDateTime(ds.attrs['starttime'] + idx_start / sampling_rate)
+        tr.stats.sampling_rate = sampling_rate
+        tr.stats.network       = ds.attrs['network']
+        tr.stats.station       = ds.attrs['station']
+        tr.stats.location      = '' if ds.attrs['location'] == '__' else ds.attrs['location']
+        tr.stats.channel       = ds.attrs['channel']
+        return (tr)
+    
+    
+    def get_waveforms_for_tag(
+        self, tag,
+        starttime=None, endtime=None, network='.*', station='.*', location='.*', channel='.*'
+    ):
+        st = obspy.Stream()
+        keys = (network, station, location, channel)
+        groups = _cascade(keys, self._h5[f'/Waveforms/{tag}'])
+        for group in _flatten(groups, n=3):
+            for year in group:
+                for julday in group[year]:
+                    for item in group[f'{year}/{julday}']:
+                        key = f'{group.name}/{year}/{julday}/{item}'
+                        tr = self._get_trace(key)
+                        if tr is not None:
+                            st.append(tr)
         return (st)
 
 
