@@ -1,5 +1,6 @@
-_DEFAULT_TAG = 'NULL'
-__version__ = '0.0a0'
+_DEFAULT_TAG     = 'NULL'
+_LABEL_SEPARATOR = ';;'
+__version__      = '0.0a0'
 
 
 import datetime
@@ -75,12 +76,20 @@ class H5Seis(object):
                 self._h5.create_group(group)
 
 
+    def __enter__(self):
+        return (self)
+
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self._h5.close()
+
+
     @property
     def waveform_tags(self):
         return (sorted(list(self._h5['/Waveforms'])))
 
 
-    def _add(self, st, tag=_DEFAULT_TAG):
+    def _add(self, st, tag=_DEFAULT_TAG, labels=None):
 # TODO: The Stream should be cleaned up here
         for tr in st:
             stats         = tr.stats
@@ -107,6 +116,8 @@ class H5Seis(object):
                 ds.attrs['station']       = station
                 ds.attrs['location']      = location
                 ds.attrs['channel']       = channel
+                if labels is not None:
+                    ds.attrs['labels'] = _LABEL_SEPARATOR.join(labels)
             else:
                 ds = self._h5[key]
             ds[:] = tr.data
@@ -141,10 +152,12 @@ class H5Seis(object):
         tr.stats.station       = ds.attrs['station']
         tr.stats.location      = '' if ds.attrs['location'] == '__' else ds.attrs['location']
         tr.stats.channel       = ds.attrs['channel']
+        if 'labels' in ds.attrs:
+            tr.stats.labels = ds.attrs['labels'].split(_LABEL_SEPARATOR)
         return (tr)
     
     
-    def add_waveforms(self, obj, tag=_DEFAULT_TAG):
+    def add_waveforms(self, obj, tag=_DEFAULT_TAG, labels=None):
         if isinstance(obj, str) and os.path.isfile(os.path.abspath(obj)):
             st = obspy.read(obj)
         elif isinstance(obj, obspy.Stream):
@@ -153,7 +166,7 @@ class H5Seis(object):
             st = obspy.Stream(obj)
         else:
             raise(TypeError)
-        self._add(st, tag=tag)
+        self._add(st, tag=tag, labels=labels)
 
         
     def close(self):
