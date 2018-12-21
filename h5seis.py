@@ -34,7 +34,7 @@ def _flatten(iterable, n=1):
     return (iterable)
 
 
-def get_date_range(starttime, endtime):
+def _get_date_range(starttime, endtime):
     '''
     Get a generator of dates in a certain range.
     '''
@@ -44,16 +44,16 @@ def get_date_range(starttime, endtime):
     return ((starttime + datetime.timedelta(days=nday) for nday in range(0, time_delta.days+1)))
 
 
-def get_first_samp_time(starttime, sampling_rate):
-    '''
-    Get the time of the first sample of the day.
-    '''
-    ts0 = obspy.UTCDateTime(f'{starttime.year}{starttime.julday:03d}')
-    first_samp_time = starttime - int((starttime - ts0) * sampling_rate) / sampling_rate
-    return (first_samp_time)
+#def _get_first_samp_time(starttime, sampling_rate):
+#    '''
+#    Get the time of the first sample of the day.
+#    '''
+#    ts0 = obspy.UTCDateTime(f'{starttime.year}{starttime.julday:03d}')
+#    first_samp_time = starttime - int((starttime - ts0) * sampling_rate) / sampling_rate
+#    return (first_samp_time)
 
 
-def get_sample_idx(time, starttime, sampling_rate, right=False):
+def _get_sample_idx(time, starttime, sampling_rate, right=False):
     '''
     Get the index of a sample at a given time, relevant to starttime.
     '''
@@ -75,16 +75,9 @@ class H5Seis(object):
                 self._h5.create_group(group)
 
 
-    def add_waveforms(self, obj, tag=_DEFAULT_TAG):
-        if isinstance(obj, str) and os.path.isfile(os.path.abspath(obj)):
-            st = obspy.read(obj)
-        elif isinstance(obj, obspy.Stream):
-            st = obj
-        elif isinstance(obj, obspy.Trace):
-            st = obspy.Stream(obj)
-        else:
-            raise(TypeError)
-        self._add(st, tag=tag)
+    @property
+    def waveform_tags(self):
+        return (sorted(list(self._h5['/Waveforms'])))
 
 
     def _add(self, st, tag=_DEFAULT_TAG):
@@ -119,26 +112,6 @@ class H5Seis(object):
             ds[:] = tr.data
 
     
-    def get_waveforms(
-        self, starttime, endtime,
-        tag=_DEFAULT_TAG, network='.*', station='.*', location='.*', channel='.*'
-    ):
-
-        st = obspy.Stream()
-        keys = (network, station, location, channel)
-        groups = _cascade(keys, self._h5[f'/Waveforms/{tag}'])
-        for group in _flatten(groups, n=3):
-            for date in get_date_range(starttime, endtime):
-                day_key = f'{group.name}/{date.year}/{date.julday:03d}'
-                if day_key not in self._h5:
-                    continue
-                for item in self._h5[day_key]:
-                    key = f'{day_key}/{item}'
-                    tr = self._get_trace(key, starttime=starttime, endtime=endtime)
-                    if tr is not None:
-                        st.append(tr)
-        return (st)
-    
     def _get_trace(self, key, starttime=None, endtime=None):
         '''
         Extract a trace from dataset at {key} between {starttime} and {endtime}
@@ -153,11 +126,11 @@ class H5Seis(object):
         if starttime is None or ts > starttime:
             idx_start = 0
         else:
-            idx_start = get_sample_idx(starttime, ts, sampling_rate, right=True)
+            idx_start = _get_sample_idx(starttime, ts, sampling_rate, right=True)
         if endtime is None or te < endtime:
             idx_end = None
         else:
-            idx_end = get_sample_idx(endtime, ts, sampling_rate)
+            idx_end = _get_sample_idx(endtime, ts, sampling_rate)
         if idx_start == idx_end:
             return (None)
         data = ds[idx_start: idx_end]
@@ -171,6 +144,43 @@ class H5Seis(object):
         return (tr)
     
     
+    def add_waveforms(self, obj, tag=_DEFAULT_TAG):
+        if isinstance(obj, str) and os.path.isfile(os.path.abspath(obj)):
+            st = obspy.read(obj)
+        elif isinstance(obj, obspy.Stream):
+            st = obj
+        elif isinstance(obj, obspy.Trace):
+            st = obspy.Stream(obj)
+        else:
+            raise(TypeError)
+        self._add(st, tag=tag)
+
+        
+    def close(self):
+        self._h5.close()
+
+
+    def get_waveforms(
+        self, starttime, endtime,
+        tag=_DEFAULT_TAG, network='.*', station='.*', location='.*', channel='.*'
+    ):
+
+        st = obspy.Stream()
+        keys = (network, station, location, channel)
+        groups = _cascade(keys, self._h5[f'/Waveforms/{tag}'])
+        for group in _flatten(groups, n=3):
+            for date in _get_date_range(starttime, endtime):
+                day_key = f'{group.name}/{date.year}/{date.julday:03d}'
+                if day_key not in self._h5:
+                    continue
+                for item in self._h5[day_key]:
+                    key = f'{day_key}/{item}'
+                    tr = self._get_trace(key, starttime=starttime, endtime=endtime)
+                    if tr is not None:
+                        st.append(tr)
+        return (st)
+
+
     def get_waveforms_for_tag(
         self, tag,
         starttime=None, endtime=None, network='.*', station='.*', location='.*', channel='.*'
@@ -187,7 +197,3 @@ class H5Seis(object):
                         if tr is not None:
                             st.append(tr)
         return (st)
-
-
-    def close(self):
-        self._h5.close()
