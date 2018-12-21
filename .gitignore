@@ -1,0 +1,5 @@
+data
+.ipynb_checkpoints
+__pycache__
+*.h5
+*.ipynb
