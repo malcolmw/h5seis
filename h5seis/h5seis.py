@@ -45,15 +45,6 @@ def _get_date_range(starttime, endtime):
     return ((starttime + datetime.timedelta(days=nday) for nday in range(0, time_delta.days+1)))
 
 
-#def _get_first_samp_time(starttime, sampling_rate):
-#    '''
-#    Get the time of the first sample of the day.
-#    '''
-#    ts0 = obspy.UTCDateTime(f'{starttime.year}{starttime.julday:03d}')
-#    first_samp_time = starttime - int((starttime - ts0) * sampling_rate) / sampling_rate
-#    return (first_samp_time)
-
-
 def _get_sample_idx(time, starttime, sampling_rate, right=False):
     '''
     Get the index of a sample at a given time, relevant to starttime.
