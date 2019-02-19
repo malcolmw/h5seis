@@ -80,8 +80,10 @@ class H5Seis(object):
         return (sorted(list(self._h5['/Waveforms'])))
 
 
-    def _add(self, st, tag=_DEFAULT_TAG, labels=None):
+    def _add(self, st, tag=_DEFAULT_TAG, labels=None, automerge=True):
 # TODO: The Stream should be cleaned up here
+        if automerge is True:
+            st.merge()
         for tr in st:
             stats         = tr.stats
             network       = stats.network
@@ -94,10 +96,11 @@ class H5Seis(object):
             sampling_rate = stats.sampling_rate
             npts          = stats.npts
             key = f'/Waveforms/{tag}/{network}/{station}/{location}/{channel}'\
-                  f'/{starttime.year}/{starttime.julday:03d}/{starttime}__{endtime}'
+                  f'/{starttime.year}/{starttime.julday:03d}'\
+                  f'/{starttime}__{endtime}'
             if key not in self._h5:
                 ds = self._h5.create_dataset(
-                    key, (npts,), 
+                    key, (npts,),
                     dtype=tr.data.dtype,
                     **self._create_dataset_kwargs
                 )
@@ -110,10 +113,11 @@ class H5Seis(object):
                 if labels is not None:
                     ds.attrs['labels'] = _LABEL_SEPARATOR.join(labels)
             else:
+                raise(KeyError(f'Key already exists! {key}'))
                 ds = self._h5[key]
             ds[:] = tr.data
 
-    
+
     def _get_trace(self, key, starttime=None, endtime=None):
         '''
         Extract a trace from dataset at {key} between {starttime} and {endtime}
@@ -128,7 +132,12 @@ class H5Seis(object):
         if starttime is None or ts > starttime:
             idx_start = 0
         else:
-            idx_start = _get_sample_idx(starttime, ts, sampling_rate, right=True)
+            idx_start = _get_sample_idx(
+                starttime,
+                ts,
+                sampling_rate,
+                right=True
+            )
         if endtime is None or te < endtime:
             idx_end = None
         else:
@@ -137,17 +146,20 @@ class H5Seis(object):
             return (None)
         data = ds[idx_start: idx_end]
         tr = obspy.Trace(data=data)
-        tr.stats.starttime     = obspy.UTCDateTime(ds.attrs['starttime'] + idx_start / sampling_rate)
+        tr.stats.starttime     = obspy.UTCDateTime(
+            ds.attrs['starttime'] + idx_start / sampling_rate
+        )
         tr.stats.sampling_rate = sampling_rate
         tr.stats.network       = ds.attrs['network']
         tr.stats.station       = ds.attrs['station']
-        tr.stats.location      = '' if ds.attrs['location'] == '__' else ds.attrs['location']
+        tr.stats.location      = '' if ds.attrs['location'] == '__' \
+            else ds.attrs['location']
         tr.stats.channel       = ds.attrs['channel']
         if 'labels' in ds.attrs:
             tr.stats.labels = ds.attrs['labels'].split(_LABEL_SEPARATOR)
         return (tr)
-    
-    
+
+
     def add_waveforms(self, obj, tag=_DEFAULT_TAG, labels=None):
         if isinstance(obj, str) and os.path.isfile(os.path.abspath(obj)):
             st = obspy.read(obj)
@@ -159,14 +171,18 @@ class H5Seis(object):
             raise(TypeError)
         self._add(st, tag=tag, labels=labels)
 
-        
+
     def close(self):
         self._h5.close()
 
 
     def get_waveforms(
         self, starttime, endtime,
-        tag=_DEFAULT_TAG, network='.*', station='.*', location='.*', channel='.*'
+        tag=_DEFAULT_TAG,
+        network='.*',
+        station='.*',
+        location='.*',
+        channel='.*'
     ):
 
         st = obspy.Stream()
@@ -179,7 +195,11 @@ class H5Seis(object):
                     continue
                 for item in self._h5[day_key]:
                     key = f'{day_key}/{item}'
-                    tr = self._get_trace(key, starttime=starttime, endtime=endtime)
+                    tr = self._get_trace(
+                        key,
+                        starttime=starttime,
+                        endtime=endtime
+                    )
                     if tr is not None:
                         st.append(tr)
         return (st)
@@ -187,7 +207,12 @@ class H5Seis(object):
 
     def get_waveforms_for_tag(
         self, tag,
-        starttime=None, endtime=None, network='.*', station='.*', location='.*', channel='.*'
+        starttime=None,
+        endtime=None,
+        network='.*',
+        station='.*',
+        location='.*',
+        channel='.*'
     ):
         st = obspy.Stream()
         keys = (network, station, location, channel)
